@@ -152,6 +152,23 @@ t.test('shell interpreter resolution', (t) => {
     t.ok(proc.called, 'spawned the shell selected from the lookup cwd')
   })
 
+  for (const platform of ['linux', 'win32']) {
+    for (const [state, value] of [['unset', undefined], ['empty', '']]) {
+      t.test(`skips bare shell lookup with ${state} PATH on ${platform}`, async (t) => {
+        mockPlatform(t, platform)
+        mockEnv(t, 'PATH', value)
+        const promiseSpawnMock = t.mock('../lib/index.js', {
+          which: { sync: () => t.fail('unexpected shell lookup') },
+        })
+
+        await t.rejects(promiseSpawnMock('echo', [], {
+          shell: 'missing-shell',
+          env: { PATH: 'child-bin' },
+        }), { code: 'ENOENT' })
+      })
+    }
+  }
+
   t.test('rejects when a bare shell is not on the trusted PATH', async (t) => {
     mockPlatform(t, 'linux')
     const promiseSpawnMock = t.mock('../lib/index.js', {
@@ -166,9 +183,10 @@ t.test('shell interpreter resolution', (t) => {
     }, {
       extra: 'property',
     })
-    const exit = new Promise(resolve => {
-      promise.process.once('exit', (code, signal) => resolve({ code, signal }))
-    })
+    const events = []
+    for (const event of ['exit', 'close']) {
+      promise.process.on(event, (code, signal) => events.push([event, code, signal]))
+    }
 
     t.equal(promise.stdin, null)
     t.equal(promise.process.stdin, null)
@@ -182,11 +200,14 @@ t.test('shell interpreter resolution', (t) => {
       stderr: Buffer.from(''),
       extra: 'property',
     })
-    t.same(await exit, { code: null, signal: null })
+    await new Promise(resolve => setImmediate(resolve))
+    t.same(events, [['exit', null, null], ['close', null, null]])
   })
 
-  t.test('preserves an explicit relative shell path', async (t) => {
+  t.test('preserves an explicit POSIX shell path without PATH', async (t) => {
     mockPlatform(t, 'linux')
+    mockEnv(t, 'PATH', undefined)
+    const shell = './tools/cmd'
     const calls = []
     const promiseSpawnMock = t.mock('../lib/index.js', {
       which: {
@@ -197,7 +218,7 @@ t.test('shell interpreter resolution', (t) => {
       },
     })
 
-    const proc = spawk.spawn('./tools/sh', ['-c', 'echo hello'], {
+    const proc = spawk.spawn(shell, ['-c', 'echo hello'], {
       cwd: '/tmp/project',
       shell: false,
     })
@@ -205,7 +226,7 @@ t.test('shell interpreter resolution', (t) => {
 
     await promiseSpawnMock('echo', ['hello'], {
       cwd: '/tmp/project',
-      shell: './tools/sh',
+      shell,
     })
 
     t.same(calls, [], 'did not resolve an explicit shell path')
@@ -251,7 +272,7 @@ t.test('Windows shell interpreter resolution', (t) => {
       trustedShell,
     ])
     for (const { opts } of shellCalls) {
-      t.equal(opts.pathExt, '.EXE;.CMD')
+      t.equal(opts.pathExt, '.COM;.EXE')
       t.equal(opts.nothrow, true)
       t.notOk(opts.path, 'did not perform a bare PATH search')
     }
@@ -274,28 +295,9 @@ t.test('Windows shell interpreter resolution', (t) => {
     })
   })
 
-  t.test('rejects when the ambient Windows PATH is missing', async (t) => {
-    mockPlatform(t, 'win32')
-    mockEnv(t, 'PATH', undefined)
-    const calls = []
-    const promiseSpawnMock = t.mock('../lib/index.js', {
-      which: {
-        sync: (key) => {
-          calls.push(key)
-          return key
-        },
-      },
-    })
-
-    await t.rejects(promiseSpawnMock('echo', ['hello'], { shell: 'missing.exe' }), {
-      code: 'ENOENT',
-      message: 'not found: missing.exe',
-    })
-    t.same(calls, [], 'did not perform any executable lookup')
-  })
-
   t.test('preserves an explicit Windows shell path', async (t) => {
     mockPlatform(t, 'win32')
+    mockEnv(t, 'PATH', undefined)
     const calls = []
     const shell = '.\\tools\\cmd.exe'
     const promiseSpawnMock = t.mock('../lib/index.js', {
@@ -351,11 +353,45 @@ t.test('Windows shell interpreter resolution', (t) => {
     t.ok(proc.called, 'spawned the shell from the trusted PATH')
   })
 
+  t.test('skips batch files and prefers .COM to .EXE for bare shells', {
+    skip: actualPlatform !== 'win32',
+  }, async (t) => {
+    const fixture = t.testdir({
+      first: { 'runner.CMD': '' },
+      second: { 'runner.EXE': '', 'both.COM': '', 'both.EXE': '' },
+    })
+    const second = path.join(fixture, 'second')
+    mockEnv(t, 'PATH', [path.join(fixture, 'first'), second].join(path.delimiter))
+    mockEnv(t, 'PATHEXT', '.CMD;.EXE;.COM')
+
+    for (const [shell, ext] of [['runner', '.EXE'], ['both', '.COM']]) {
+      const proc = spawk.spawn(path.join(second, shell + ext), ['-c', 'echo hello'])
+      await actualPromiseSpawn('echo', ['hello'], { shell })
+      t.ok(proc.called)
+    }
+  })
+
   t.end()
 })
 
 t.test('cmd', (t) => {
   mockPlatform(t, 'linux')
+
+  for (const shell of ['cmd', 'cmd.exe']) {
+    t.test(`keeps cmd syntax when ${shell} resolves to a POSIX path`, async (t) => {
+      const resolved = `/mnt/c/Windows/System32/${shell}`
+      const promiseSpawnMock = t.mock('../lib/index.js', {
+        which: { sync: key => key === shell ? resolved : 'echo.exe' },
+      })
+      const proc = spawk.spawn(resolved, ['/d', '/s', '/c', 'echo ^"two^ words^"'], {
+        shell: false,
+        windowsVerbatimArguments: true,
+      })
+
+      await promiseSpawnMock('echo', ['two words'], { shell })
+      t.ok(proc.called)
+    })
+  }
 
   t.test('runs in shell', async (t) => {
     const proc = spawk.spawn('cmd.exe', ['/d', '/s', '/c', 'echo hello'], {

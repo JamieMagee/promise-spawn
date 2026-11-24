@@ -61,11 +61,13 @@ spawned process.
   the ambient process `PATH` (`process.env.PATH`) rather than any `PATH` supplied
   via `opts.env`, so an untrusted `opts.env.PATH` cannot substitute the shell
   interpreter. Relative ambient `PATH` entries are resolved against
-  `process.cwd()` before `opts.cwd` is applied. On Windows, the current directory
-  is not searched unless the ambient `PATH` explicitly contains `.` or a relative
-  directory. If a bare shell name cannot be resolved, the returned promise
-  rejects with `ENOENT`. This option is _not_ passed through to
-  `child_process.spawn`.
+  `process.cwd()` before `opts.cwd` is applied. On Windows, shell lookup tries
+  `.COM` then `.EXE` in each directory. This does not change `PATHEXT` for
+  commands inside `cmd.exe`. Windows searches the current directory only if
+  the ambient `PATH` includes `.` or a relative directory. For a bare shell
+  name, the promise rejects with `ENOENT` if the ambient `PATH` is unset,
+  empty, or contains no matching executable. This option is _not_ passed
+  through to `child_process.spawn`.
 - Any other options for `child_process.spawn` can be passed as well.
 
 ### `promiseSpawn.open(arg, opts, extra)` -> `Promise`
