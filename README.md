@@ -43,9 +43,11 @@ will be decorated with `stdout` and `stderr` values.  If `stdioString` is
 set to `true`, these will be strings.  Otherwise they will be Buffer
 objects.
 
-Returned promise is decorated with the `stdin` stream if the process is set
-to pipe from `stdin`.  Writing to this stream writes to the `stdin` of the
-spawned process.
+For piped input, `promise.stdin` is the writable stream at
+`promise.process.stdin`. If shell lookup fails, piped stdin discards input
+and piped stdout and stderr end without data. Non-piped handles are `null`.
+The process emits `error` with the same error that rejects the promise, then
+`exit`. It emits `close` after its standard pipes close.
 
 #### Options
 
@@ -57,17 +59,17 @@ spawned process.
   the system default shell is used. If a String, that specific shell is used.
   When a shell is used, the given command runs from within that shell by
   concatenating the command and its escaped arguments and running the result.
-  An explicit shell path is used as provided. A bare shell name is resolved from
-  the ambient process `PATH` (`process.env.PATH`) rather than any `PATH` supplied
-  via `opts.env`, so an untrusted `opts.env.PATH` cannot substitute the shell
-  interpreter. Relative ambient `PATH` entries are resolved against
-  `process.cwd()` before `opts.cwd` is applied. On Windows, shell lookup tries
-  `.COM` then `.EXE` in each directory. This does not change `PATHEXT` for
-  commands inside `cmd.exe`. Windows searches the current directory only if
-  the ambient `PATH` includes `.` or a relative directory. For a bare shell
-  name, the promise rejects with `ENOENT` if the ambient `PATH` is unset,
-  empty, or contains no matching executable. This option is _not_ passed
-  through to `child_process.spawn`.
+  An explicit shell path is used as provided. For a bare name, lookup uses the
+  parent process's `PATH` (`process.env.PATH`), never `opts.env.PATH`. Relative
+  entries resolve against `process.cwd()` before `opts.cwd` takes effect.
+  On POSIX, quotes are literal and an empty entry in a nonempty `PATH` means
+  the current directory. On Windows, the variable name is case-insensitive
+  even in workers. Lookup skips empty entries and accepts single or double
+  quotes around directories containing semicolons. It tries `.COM` then `.EXE`
+  in each listed directory. Commands inside `cmd.exe` still use `PATHEXT`.
+  For a bare shell name, the promise rejects with `ENOENT` if the parent
+  `PATH` is unset, empty, or contains no matching executable. This option is
+  _not_ passed through to `child_process.spawn`.
 - Any other options for `child_process.spawn` can be passed as well.
 
 ### `promiseSpawn.open(arg, opts, extra)` -> `Promise`

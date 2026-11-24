@@ -3,22 +3,12 @@
 const spawk = require('spawk')
 const t = require('tap')
 const os = require('node:os')
-const path = require('node:path')
-
-const pathMock = {
-  ...path,
-  posix: {
-    ...path.posix,
-    isAbsolute: () => true,
-  },
-}
 
 // Stub shell resolution so the spawn assertions remain stable; trusted-PATH
 // resolution is tested in test/shell.js.
-const promiseSpawn = t.mock('../lib/index.js', {
-  path: pathMock,
-  which: { sync: (cmd) => cmd },
-})
+const shell = '/bin/sh'
+const which = { sync: () => shell }
+const promiseSpawn = t.mock('../lib/index.js', { which })
 
 spawk.preventUnmatched()
 t.afterEach(() => {
@@ -90,7 +80,7 @@ t.test('process.platform === darwin', (t) => {
   })
 
   t.test('uses open with a shell', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com')
     t.hasStrict(result, {
@@ -102,7 +92,7 @@ t.test('process.platform === darwin', (t) => {
   })
 
   t.test('ignores shell = false', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { shell: false })
     t.hasStrict(result, {
@@ -114,7 +104,7 @@ t.test('process.platform === darwin', (t) => {
   })
 
   t.test('respects opts.command', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'browser https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { command: 'browser' })
     t.hasStrict(result, {
@@ -137,7 +127,7 @@ t.test('process.platform === linux', (t) => {
 
   // xdg-open is not installed in WSL by default
   t.test('uses xdg-open in a shell', { skip: isWSL }, async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'xdg-open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'xdg-open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com')
     t.hasStrict(result, {
@@ -150,7 +140,7 @@ t.test('process.platform === linux', (t) => {
 
   // xdg-open is not installed in WSL by default
   t.test('ignores shell = false', { skip: isWSL }, async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'xdg-open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'xdg-open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { shell: false })
     t.hasStrict(result, {
@@ -162,7 +152,7 @@ t.test('process.platform === linux', (t) => {
   })
 
   t.test('respects opts.command', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'browser https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { command: 'browser' })
     t.hasStrict(result, {
@@ -178,13 +168,12 @@ t.test('process.platform === linux', (t) => {
       os: {
         release: () => 'Microsoft',
       },
-      path: pathMock,
-      which: { sync: (cmd) => cmd },
+      which,
     })
     const browser = process.env.BROWSER
     process.env.BROWSER = '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe'
 
-    const proc = spawk.spawn('sh', ['-c', 'sensible-browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'sensible-browser https://google.com'], { shell: false })
 
     const result = await promiseSpawnMock.open('https://google.com')
     t.hasStrict(result, {
@@ -204,13 +193,12 @@ t.test('process.platform === linux', (t) => {
       os: {
         release: () => 'microsoft',
       },
-      path: pathMock,
-      which: { sync: (cmd) => cmd },
+      which,
     })
     const browser = process.env.BROWSER
     process.env.BROWSER = '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe'
 
-    const proc = spawk.spawn('sh', ['-c', 'sensible-browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'sensible-browser https://google.com'], { shell: false })
 
     const result = await promiseSpawnMock.open('https://google.com')
     t.hasStrict(result, {
@@ -234,7 +222,7 @@ t.test('process.platform === linux', (t) => {
     const browser = process.env.BROWSER
     delete process.env.BROWSER
 
-    const proc = spawk.spawn('sh', ['-c', 'sensible-browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'sensible-browser https://google.com'], { shell: false })
 
     await t.rejects(promiseSpawnMock.open('https://google.com'), {
       message: 'Set the BROWSER environment variable to your desired browser.',
@@ -259,7 +247,7 @@ t.test('process.platform === freebsd', (t) => {
   })
 
   t.test('uses xdg-open with a shell', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'xdg-open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'xdg-open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com')
     t.hasStrict(result, {
@@ -271,7 +259,7 @@ t.test('process.platform === freebsd', (t) => {
   })
 
   t.test('ignores shell = false', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'xdg-open https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'xdg-open https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { shell: false })
     t.hasStrict(result, {
@@ -283,7 +271,7 @@ t.test('process.platform === freebsd', (t) => {
   })
 
   t.test('respects opts.command', async (t) => {
-    const proc = spawk.spawn('sh', ['-c', 'browser https://google.com'], { shell: false })
+    const proc = spawk.spawn(shell, ['-c', 'browser https://google.com'], { shell: false })
 
     const result = await promiseSpawn.open('https://google.com', { command: 'browser' })
     t.hasStrict(result, {
