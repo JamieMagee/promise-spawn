@@ -44,10 +44,11 @@ set to `true`, these will be strings.  Otherwise they will be Buffer
 objects.
 
 For piped input, `promise.stdin` is the writable stream at
-`promise.process.stdin`. If shell lookup fails, piped stdin discards input
-and piped stdout and stderr end without data. Non-piped handles are `null`.
-The process emits `error` with the same error that rejects the promise, then
-`exit`. It emits `close` after its standard pipes close.
+`promise.process.stdin`. If shell lookup fails, the process destroys piped
+stdin before emitting `error`. A deferred `stdin.end(input, callback)` then
+reports `ERR_STREAM_DESTROYED` to the callback. Piped stdout and stderr end
+without data. Non-piped handles are `null`. The process emits the same error
+that rejects the promise, then `exit`, and emits `close` after its pipes close.
 
 #### Options
 
@@ -63,10 +64,14 @@ The process emits `error` with the same error that rejects the promise, then
   parent process's `PATH` (`process.env.PATH`), never `opts.env.PATH`. Relative
   entries resolve against `process.cwd()` before `opts.cwd` takes effect.
   On POSIX, quotes are literal and an empty entry in a nonempty `PATH` means
-  the current directory. On Windows, the variable name is case-insensitive
-  even in workers. Lookup skips empty entries and accepts single or double
-  quotes around directories containing semicolons. It tries `.COM` then `.EXE`
-  in each listed directory. Commands inside `cmd.exe` still use `PATHEXT`.
+  the current directory. When an entry contains a `..` component, lookup
+  follows symlinks before evaluating `..`. It skips missing or inaccessible
+  directories. Unexpected I/O errors during this traversal reject the promise.
+  On Windows, the variable name is case-insensitive even in workers. Lookup
+  skips empty entries and accepts single or double quotes around directories
+  containing semicolons. A trailing apostrophe in an unquoted entry is
+  literal. Lookup tries `.COM` then `.EXE` in each listed directory. Commands
+  inside `cmd.exe` still use `PATHEXT`.
   For a bare shell name, the promise rejects with `ENOENT` if the parent
   `PATH` is unset, empty, or contains no matching executable. This option is
   _not_ passed through to `child_process.spawn`.

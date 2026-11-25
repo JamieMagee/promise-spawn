@@ -2,6 +2,7 @@
 
 const path = require('path')
 const { once } = require('events')
+const { realpathSync, symlinkSync } = require('fs')
 const { Worker } = require('worker_threads')
 const spawk = require('spawk')
 const t = require('tap')
@@ -146,6 +147,49 @@ t.test('shell interpreter resolution', (t) => {
     t.ok(proc.called)
   })
 
+  t.test('traverses POSIX parent components on the filesystem', {
+    skip: actualPlatform === 'win32',
+  }, async (t) => {
+    const root = realpathSync.native(t.testdir({ file: '', physical: { child: {} } }))
+    symlinkSync('physical/child', path.join(root, 'alias..name'))
+    const relative = path.relative(process.cwd(), root)
+    const promiseSpawnMock = t.mock('../lib/index.js', { which: { sync: candidate => candidate } })
+    for (const [searchPath, directory] of [
+      [`${relative}/missing/..:${root}/file/..:${relative}/alias..name/..`, 'physical'],
+      [`${relative}/alias..name`, 'alias..name'],
+    ]) {
+      await t.test(`uses the ${directory} directory`, async (t) => {
+        mockEnv(t, 'PATH', searchPath)
+        const proc = spawk.spawn(path.join(root, directory, 'runner'), ['-c', 'echo'])
+        await promiseSpawnMock('echo', [], { shell: 'runner', cwd: root })
+        t.ok(proc.called)
+      })
+    }
+  })
+
+  t.test('reports unexpected filesystem errors during POSIX shell lookup', async (t) => {
+    mockPlatform(t, 'linux')
+    mockEnv(t, 'PATH', 'inaccessible/..:unreadable/..:/next')
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    const ioError = Object.assign(new Error('I/O error'), { code: 'EIO' })
+    const native = dir => {
+      throw dir === 'inaccessible/..' ? denied : ioError
+    }
+    const promiseSpawnMock = t.mock('../lib/index.js', {
+      fs: { realpathSync: { native } },
+      which: { sync: () => t.fail('unexpected executable lookup') },
+    })
+    const p = promiseSpawnMock('echo', [], { shell: 'runner' })
+    let emitted
+    p.process.once('error', er => {
+      emitted = er
+    })
+    const error = await p.catch(er => er)
+    t.equal(error, ioError)
+    t.equal(emitted, ioError)
+    t.match(error, { code: 'EIO', cmd: 'echo', args: [] })
+  })
+
   t.test('reads a worker environment containing only Path', async (t) => {
     const windows = actualPlatform === 'win32'
     const directory = windows ? path.join(process.env.SystemRoot, 'System32') : '/bin'
@@ -206,8 +250,11 @@ t.test('shell interpreter resolution', (t) => {
       promise.process.on(event, (code, signal) => events.push([event, code, signal]))
     }
 
+    const rejection = promise.catch(er => er)
+    t.equal(promise.process.unref(), undefined)
+    t.equal(promise.process.ref(), undefined)
     t.equal(promise.process.kill(), false)
-    const error = await promise.catch(er => er)
+    const error = await rejection
     t.match(error, {
       code: 'ENOENT',
       message: 'not found: missing-shell',
@@ -243,9 +290,27 @@ t.test('shell interpreter resolution', (t) => {
     t.equal(closed.pop(), 'process')
     t.same(closed.sort(), [0, 1, 2])
     t.same(chunks, [])
-    t.ok(proc.stdin.writableFinished)
+    t.ok(proc.stdin.destroyed)
     t.ok(proc.stdout.readableEnded)
     t.ok(proc.stderr.readableEnded, 'unread stderr also reached EOF')
+  })
+
+  t.test('destroys failed stdin before deferred input', async (t) => {
+    mockEnv(t, 'PATH', '')
+    const p = actualPromiseSpawn('echo', [], { shell: 'missing-shell' })
+    const rejection = t.rejects(p, { code: 'ENOENT' })
+    const errors = []
+    let writeError
+    p.stdin.on('error', er => errors.push(er))
+    p.process.once('error', () => t.ok(p.stdin.destroyed, 'destroyed before notifying listeners'))
+    process.nextTick(() => p.stdin.end('input', er => {
+      writeError = er
+    }))
+
+    await rejection
+    await new Promise(resolve => setImmediate(resolve))
+    t.match(writeError, { code: 'ERR_STREAM_DESTROYED' })
+    t.same(errors, [])
   })
 
   t.test('creates only the requested standard pipes on lookup failure', async (t) => {
@@ -303,7 +368,7 @@ t.test('Windows shell interpreter resolution', (t) => {
     mockPlatform(t, 'win32')
     mockEnv(t, 'PATH', [
       'C:\\first', '', '""', "''", "'C:\\single;quoted'", '"C:\\Program Files;shared"',
-      'C:\\plain', '"C:\\last;entry',
+      "C:\\tools'", `"C:\\quoted'"`, 'C:\\plain', '"C:\\last;entry',
     ].join(';'))
     mockEnv(t, 'PATHEXT', '.EXE;.CMD')
 
@@ -336,6 +401,8 @@ t.test('Windows shell interpreter resolution', (t) => {
       'C:\\first\\cmd.exe',
       'C:\\single;quoted\\cmd.exe',
       'C:\\Program Files;shared\\cmd.exe',
+      "C:\\tools'\\cmd.exe",
+      "C:\\quoted'\\cmd.exe",
       'C:\\plain\\cmd.exe',
       trustedShell,
     ])
@@ -425,15 +492,18 @@ t.test('Windows shell interpreter resolution', (t) => {
     skip: actualPlatform !== 'win32',
   }, async (t) => {
     const fixture = t.testdir({
-      first: { 'runner.CMD': '' },
-      'second;tools': { 'runner.EXE': '', 'both.COM': '', 'both.EXE': '' },
+      "first'": { 'runner.CMD': '', 'both.COM': '', 'both.EXE': '' },
+      'second;tools': { 'runner.EXE': '' },
     })
+    const first = path.join(fixture, "first'")
     const second = path.join(fixture, 'second;tools')
-    mockEnv(t, 'PATH', [path.join(fixture, 'first'), `"${second}"`].join(path.delimiter))
+    mockEnv(t, 'PATH', [first, `"${second}"`].join(path.delimiter))
     mockEnv(t, 'PATHEXT', '.CMD;.EXE;.COM')
 
-    for (const [shell, ext] of [['runner', '.EXE'], ['both', '.COM']]) {
-      const proc = spawk.spawn(path.join(second, shell + ext), ['-c', 'echo hello'])
+    for (const [shell, file] of [
+      ['runner', path.join(second, 'runner.EXE')], ['both', path.join(first, 'both.COM')],
+    ]) {
+      const proc = spawk.spawn(file, ['-c', 'echo hello'])
       await actualPromiseSpawn('echo', ['hello'], { shell })
       t.ok(proc.called)
     }
